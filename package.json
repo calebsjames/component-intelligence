@@ -1,0 +1,26 @@
+{
+  "name": "component-intelligence-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for component intelligence",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js"
+  },
+  "keywords": [
+    "mcp",
+    "server",
+    "component-intelligence"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0"
+  }
+}
