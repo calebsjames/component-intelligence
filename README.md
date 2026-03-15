@@ -39,33 +39,7 @@ It auto-detects whether your project is React, Vue and sets up sensible scan tar
 
 ## Setup
 
-```bash
-npm install
-npm run build
-```
-
-### Claude Code
-
 Add to your project's `.mcp.json` (or `~/.claude/mcp.json` for global):
-
-```json
-{
-  "mcpServers": {
-    "component-intelligence": {
-      "command": "node",
-      "args": ["/path/to/component-intelligence/dist/server.js"],
-      "env": {
-        "WORKSPACE_ROOT": "/path/to/your/project"
-      }
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -85,7 +59,7 @@ Add to your project's `.mcp.json` (or `~/.claude/mcp.json` for global):
 
 ## Configuration
 
-Drop a `.component-intelligence.json` in your project root to customize scanning. If you don't create one, the server auto-detects your framework and uses defaults based on what it finds.
+Put a `.component-intelligence.json` in your project root to customize scanning. If you don't create one, the server auto-detects your framework and uses defaults for React or Vue based on what it finds.
 
 ```json
 {
