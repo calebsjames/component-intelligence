@@ -13,9 +13,17 @@ export class PropParser {
    */
   async parseFile(filePath: string): Promise<ComponentProps | null> {
     try {
-      const content = await fs.readFile(filePath, "utf-8");
+      let content = await fs.readFile(filePath, "utf-8");
       const ext = path.extname(filePath);
       const componentName = path.basename(filePath, ext);
+      const isVue = filePath.endsWith(".vue");
+
+      // For .vue files, extract <script> block before parsing
+      if (isVue) {
+        const scriptMatch = content.match(/<script\b[^>]*>([\s\S]*?)<\/script>/);
+        content = scriptMatch ? scriptMatch[1] : "";
+        if (!content.trim()) return { componentName, props: {} };
+      }
 
       const sourceFile = ts.createSourceFile(
         filePath,
@@ -28,6 +36,7 @@ export class PropParser {
       const defaults = this.extractDefaultValues(sourceFile, componentName);
       const propsInterfaceName = `${componentName}Props`;
 
+      // Standard: look for ComponentNameProps or *Props interface/type alias
       const candidates: (ts.InterfaceDeclaration | ts.TypeAliasDeclaration | null)[] = [
         this.findNode(sourceFile, ts.isInterfaceDeclaration, (n) => n.name.text === propsInterfaceName),
         this.findNode(sourceFile, ts.isTypeAliasDeclaration, (n) => n.name.text === propsInterfaceName),
@@ -41,6 +50,15 @@ export class PropParser {
           ? this.parseInterface(candidate, componentName, sourceFile)
           : this.parseTypeAlias(candidate, componentName, sourceFile);
         return this.mergeDefaults(parsed, defaults);
+      }
+
+      // Vue: try defineProps<{...}>() / withDefaults(defineProps<...>(), {...})
+      if (isVue) {
+        const vueProps = this.parseVueDefineProps(sourceFile, componentName, defaults);
+        if (vueProps) return vueProps;
+
+        const optionsProps = this.parseOptionsApiProps(sourceFile, componentName);
+        if (optionsProps) return optionsProps;
       }
 
       return { componentName, props: {} };
@@ -258,6 +276,142 @@ export class PropParser {
         };
       }
     }
+    return result;
+  }
+
+  // ========== Vue Prop Parsing ==========
+
+  /**
+   * Parse Vue defineProps<{...}>() or withDefaults(defineProps<...>(), {...})
+   */
+  private parseVueDefineProps(
+    sourceFile: ts.SourceFile,
+    componentName: string,
+    defaults: Record<string, string>
+  ): ComponentProps | null {
+    let result: ComponentProps | null = null;
+
+    const visit = (node: ts.Node) => {
+      if (result) return;
+      if (!ts.isCallExpression(node)) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+
+      const expr = node.expression;
+      const isDefineProps = ts.isIdentifier(expr) && expr.text === "defineProps";
+      const isWithDefaults = ts.isIdentifier(expr) && expr.text === "withDefaults";
+
+      if (!isDefineProps && !isWithDefaults) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+
+      let definePropsNode: ts.CallExpression = node;
+
+      // For withDefaults, first arg is the defineProps call, second arg has defaults
+      if (isWithDefaults) {
+        const innerCall = node.arguments[0];
+        if (innerCall && ts.isCallExpression(innerCall)) {
+          definePropsNode = innerCall;
+          // Extract defaults from second argument
+          const defaultsArg = node.arguments[1];
+          if (defaultsArg && ts.isObjectLiteralExpression(defaultsArg)) {
+            for (const prop of defaultsArg.properties) {
+              if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
+                defaults[prop.name.text] = prop.initializer.getText(sourceFile);
+              }
+            }
+          }
+        }
+      }
+
+      // Get type argument: defineProps<TYPE>()
+      const typeArgs = definePropsNode.typeArguments;
+      if (!typeArgs || typeArgs.length === 0) return;
+
+      const typeArg = typeArgs[0];
+
+      // Inline type literal: defineProps<{ prop: type; ... }>()
+      if (ts.isTypeLiteralNode(typeArg)) {
+        result = {
+          componentName,
+          props: this.collectPropsFromMembers(typeArg.members, sourceFile),
+        };
+      }
+      // Reference to local interface: defineProps<Props>()
+      else if (ts.isTypeReferenceNode(typeArg) && ts.isIdentifier(typeArg.typeName)) {
+        const refName = typeArg.typeName.text;
+        const iface = this.findNode(sourceFile, ts.isInterfaceDeclaration, (n) => n.name.text === refName);
+        if (iface) {
+          result = this.parseInterface(iface, componentName, sourceFile);
+        } else {
+          const typeAlias = this.findNode(sourceFile, ts.isTypeAliasDeclaration, (n) => n.name.text === refName);
+          if (typeAlias) {
+            result = this.parseTypeAlias(typeAlias, componentName, sourceFile);
+          }
+        }
+      }
+    };
+
+    visit(sourceFile);
+
+    if (result) {
+      return this.mergeDefaults(result, defaults);
+    }
+    return null;
+  }
+
+  /**
+   * Parse Options API props: defineComponent({ props: { modelValue: { type: String, required: true } } })
+   */
+  private parseOptionsApiProps(
+    sourceFile: ts.SourceFile,
+    componentName: string
+  ): ComponentProps | null {
+    let result: ComponentProps | null = null;
+
+    const visit = (node: ts.Node) => {
+      if (result) return;
+
+      if (
+        ts.isPropertyAssignment(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === "props" &&
+        ts.isObjectLiteralExpression(node.initializer)
+      ) {
+        const props: Record<string, PropInfo> = {};
+
+        for (const prop of node.initializer.properties) {
+          if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) continue;
+          const propName = prop.name.text;
+
+          if (ts.isObjectLiteralExpression(prop.initializer)) {
+            let type = "unknown";
+            let required = false;
+            let defaultValue: string | undefined;
+
+            for (const inner of prop.initializer.properties) {
+              if (!ts.isPropertyAssignment(inner) || !ts.isIdentifier(inner.name)) continue;
+              if (inner.name.text === "type") type = inner.initializer.getText(sourceFile);
+              if (inner.name.text === "required" && inner.initializer.kind === ts.SyntaxKind.TrueKeyword) required = true;
+              if (inner.name.text === "default") defaultValue = inner.initializer.getText(sourceFile);
+            }
+
+            props[propName] = { type, required, defaultValue };
+          } else {
+            // Shorthand: propName: String
+            props[propName] = { type: prop.initializer.getText(sourceFile), required: false };
+          }
+        }
+
+        result = { componentName, props };
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(sourceFile);
     return result;
   }
 

@@ -17,6 +17,8 @@ export interface ArchitectureOverview {
     services: { count: number; names: string[] };
     adapters: { count: number; names: string[] };
     contexts: { count: number; names: string[] };
+    dtos: { count: number; names: string[] };
+    types: { count: number; names: string[] };
   };
   dataFlowChains: string[];
   phiViolationCount: number;
@@ -55,12 +57,14 @@ export async function getArchitectureOverview(
   const services = layerItems("service");
   const adapters = layerItems("adapter");
   const contexts = layerItems("context");
+  const dtos = layerItems("dto");
+  const types = layerItems("type");
 
   // Build data flow chains (page -> hook -> service -> adapter)
   const dataFlowChains: string[] = [];
   for (const page of pages) {
     for (const hookImport of page.imports || []) {
-      if (hookImport.source.includes("hooks")) {
+      if (hookImport.source.includes("hooks") || hookImport.source.includes("composables")) {
         const hookName = hookImport.names[0];
         const hook = hooks.find(
           (h) => h.name.toLowerCase() === hookName?.toLowerCase()
@@ -111,6 +115,14 @@ export async function getArchitectureOverview(
       contexts: {
         count: contexts.length,
         names: contexts.map((c) => c.name),
+      },
+      dtos: {
+        count: dtos.length,
+        names: dtos.map((d) => d.name),
+      },
+      types: {
+        count: types.length,
+        names: types.map((t) => t.name),
       },
     },
     dataFlowChains: [...new Set(dataFlowChains)].slice(0, 30),

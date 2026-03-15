@@ -8,6 +8,7 @@ export interface HookDetail {
   description?: string;
   parameters?: string[];
   returnType?: string;
+  stateVariables?: string[];
   hooks: string[];
   queryKeys?: string[];
   adapterCalls?: string[];
@@ -64,6 +65,7 @@ export async function getHookDetail(
     description: hook.description,
     parameters: hook.parameters,
     returnType: hook.returnType,
+    stateVariables: hook.stateVariables?.length ? hook.stateVariables : undefined,
     hooks: hook.hooks || [],
     queryKeys: hook.queryKeys,
     adapterCalls: hook.adapterCalls,

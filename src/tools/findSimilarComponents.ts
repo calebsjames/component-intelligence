@@ -35,7 +35,7 @@ export async function findSimilarComponents(
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 15)
-    .map((item) => item.component);
+    .map((item) => ({ ...item.component, _score: item.score }));
 }
 
 function scoreByKeywords(component: Component, keywords: string[]): number {

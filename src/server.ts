@@ -23,6 +23,7 @@ import { getDependencyChain } from "./tools/getDependencyChain.js";
 import { getRouteMap } from "./tools/getRouteMap.js";
 import { getHookDetail } from "./tools/getHookDetail.js";
 import { findDeadCode } from "./tools/findDeadCode.js";
+import { getDataFlow } from "./tools/getDataFlow.js";
 
 // Get workspace root from env, CLI arg, or fall back to parent of mcp-server directory
 const __filename = fileURLToPath(import.meta.url);
@@ -52,8 +53,8 @@ const TOOLS = [
         layer: {
           type: "string",
           description:
-            "Optional: filter by architecture layer (component, page, hook, service, adapter, context)",
-          enum: ["component", "page", "hook", "service", "adapter", "context"],
+            "Optional: filter by architecture layer (component, page, hook, service, adapter, context, dto, type)",
+          enum: ["component", "page", "hook", "service", "adapter", "context", "dto", "type"],
         },
       },
       required: [],
@@ -62,7 +63,7 @@ const TOOLS = [
   {
     name: "search_components",
     description:
-      "Search across the full codebase (components, pages, hooks, services, adapters) by name, path, description, or keywords. Uses fuzzy matching and multi-token scoring. Returns results ranked by relevance.",
+      "Search across the full codebase (components, pages, hooks, services, adapters, DTOs, types) by name, path, description, or keywords. Uses fuzzy matching and multi-token scoring. Returns results ranked by relevance.",
     inputSchema: {
       type: "object",
       properties: {
@@ -75,7 +76,7 @@ const TOOLS = [
           type: "string",
           description:
             "Optional: filter results to a specific architecture layer",
-          enum: ["component", "page", "hook", "service", "adapter", "context"],
+          enum: ["component", "page", "hook", "service", "adapter", "context", "dto", "type"],
         },
       },
       required: ["query"],
@@ -137,7 +138,7 @@ const TOOLS = [
   {
     name: "find_component_usages",
     description:
-      "Find where a component, hook, or service is used (imported and rendered) across the entire codebase. Searches components, pages, hooks, services, etc. Returns files, parent items, and line numbers with usage type (jsx or import). Useful for impact analysis.",
+      "Find where a component, hook, or service is used (imported and rendered in templates/JSX) across the entire codebase. Searches components, pages, hooks, services, etc. Returns files, parent items, and line numbers with usage type (template, jsx, or import). Useful for impact analysis.",
     inputSchema: {
       type: "object",
       properties: {
@@ -163,7 +164,7 @@ const TOOLS = [
   {
     name: "get_dependency_chain",
     description:
-      "Get the full dependency chain for any component, hook, or service. Returns both upstream (what uses it) and downstream (what it depends on) relationships. Useful for understanding impact of changes.",
+      "Get the full dependency chain for any component, hook, or service. Returns both upstream (what uses it) and downstream (what it depends on) relationships. Supports recursive traversal with depth parameter (1-3). Useful for understanding impact of changes and tracing data flow.",
     inputSchema: {
       type: "object",
       properties: {
@@ -172,6 +173,11 @@ const TOOLS = [
           description:
             'Item name (e.g., "CompleteHandoffButton", "useHandoffState")',
         },
+        depth: {
+          type: "number",
+          description:
+            "Recursion depth (1-3, default 1). Depth 2+ includes nested dependsOn/usedBy on child nodes.",
+        },
       },
       required: ["name"],
     },
@@ -179,7 +185,7 @@ const TOOLS = [
   {
     name: "get_route_map",
     description:
-      "Get the complete route -> page -> component mapping. Returns all React Router routes with their page components, protection status, hooks used, child components rendered, dynamic segments, and nested route hierarchy.",
+      "Get the complete route -> page -> component mapping. Returns all routes (React Router or Vue Router) with their page components, protection status, hooks/composables used, child components rendered, dynamic segments, and nested route hierarchy.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -189,7 +195,7 @@ const TOOLS = [
   {
     name: "get_hook_detail",
     description:
-      "Get detailed information about a custom React hook. Returns parameters, return type, React Query keys, adapter/service calls, data fetching pattern, and which components use this hook.",
+      "Get detailed information about a custom hook or Vue composable. Returns parameters, return type, query keys, adapter/service calls, data fetching pattern, and which components use this hook/composable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -212,10 +218,26 @@ const TOOLS = [
           type: "string",
           description:
             "Optional: limit dead code search to a specific architecture layer",
-          enum: ["component", "page", "hook", "service", "adapter", "context"],
+          enum: ["component", "page", "hook", "service", "adapter", "context", "dto", "type"],
         },
       },
       required: [],
+    },
+  },
+  {
+    name: "get_data_flow",
+    description:
+      "Trace the full data path from a component through composables → services → adapters → API endpoints. Returns the complete chain with file paths. Replaces the common multi-step pattern of chaining get_component_detail + get_hook_detail + manual tracing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description:
+            'Component or composable name (e.g., "ProjectModal", "useProjectModal")',
+        },
+      },
+      required: ["name"],
     },
   },
 ];
@@ -275,7 +297,7 @@ async function handleToolCall(name: string, args?: Record<string, unknown>) {
     case "search_components":
       return searchComponents(requireStringArg(args, "query"), scanner, cache, {
         layer: args?.layer as
-          | "component" | "page" | "hook" | "service" | "adapter" | "context"
+          | "component" | "page" | "hook" | "service" | "adapter" | "context" | "dto" | "type"
           | undefined,
       });
 
@@ -305,7 +327,8 @@ async function handleToolCall(name: string, args?: Record<string, unknown>) {
 
     case "get_dependency_chain":
       return getDependencyChain(
-        { name: requireStringArg(args, "name") }, scanner, cache
+        { name: requireStringArg(args, "name"), depth: args?.depth as number | undefined },
+        scanner, cache
       );
 
     case "get_route_map":
@@ -319,7 +342,14 @@ async function handleToolCall(name: string, args?: Record<string, unknown>) {
     case "find_dead_code":
       return findDeadCode(
         scanner, cache, WORKSPACE_ROOT,
-        { layer: args?.layer as string | undefined }
+        { layer: args?.layer as string | undefined },
+        routeAnalyzer
+      );
+
+    case "get_data_flow":
+      return getDataFlow(
+        { name: requireStringArg(args, "name") },
+        scanner, cache
       );
 
     default:

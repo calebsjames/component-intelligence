@@ -60,7 +60,7 @@ export async function searchComponents(
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map((item) => item.component);
+    .map((item) => ({ ...item.component, _score: item.score }));
 }
 
 function scoreComponent(

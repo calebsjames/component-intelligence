@@ -161,6 +161,10 @@ export class CacheManager {
 
     for (const component of catalog.components) {
       this.addToIndex(this.nameIndex, component.name.toLowerCase(), component);
+      // Also index by fileAlias (when defineComponent name differs from filename)
+      if (component.fileAlias) {
+        this.addToIndex(this.nameIndex, component.fileAlias.toLowerCase(), component);
+      }
       this.addToIndex(this.layerIndex, component.architectureLayer, component);
 
       const importedNames = (component.imports || []).flatMap((imp) => imp.names);

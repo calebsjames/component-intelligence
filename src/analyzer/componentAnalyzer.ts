@@ -36,12 +36,11 @@ export class ComponentAnalyzer {
     layer: ArchitectureLayer = "component"
   ): Promise<ComponentAnalysis> {
     try {
-      let content = await fs.readFile(filePath, "utf-8");
+      const rawContent = await fs.readFile(filePath, "utf-8");
+      const isVue = filePath.endsWith(".vue");
 
       // For .vue files, extract the <script> block for AST analysis
-      if (filePath.endsWith(".vue")) {
-        content = this.extractVueScript(content);
-      }
+      let content = isVue ? this.extractVueScript(rawContent) : rawContent;
 
       const sourceFile = ts.createSourceFile(
         filePath,
@@ -52,6 +51,29 @@ export class ComponentAnalyzer {
       );
 
       const base = this.analyzeWithAST(sourceFile, content, componentName, filePath);
+
+      // Vue: analyze <template> block for child components, events, v-model
+      if (isVue) {
+        const templateAnalysis = this.analyzeVueTemplate(rawContent);
+        base.childComponents = [...new Set([...(base.childComponents || []), ...templateAnalysis.childComponents])].sort();
+        base.eventHandlers = [...new Set([...(base.eventHandlers || []), ...templateAnalysis.eventHandlers])].sort();
+
+        // Extract emits from defineEmits / Options API
+        base.emits = this.extractVueEmits(sourceFile);
+
+        // Detect v-model bindings: emits matching "update:xxx" pattern
+        if (base.emits?.length) {
+          const vModelBindings = base.emits
+            .filter((e) => e.startsWith("update:"))
+            .map((e) => e.slice("update:".length));
+          if (vModelBindings.length > 0) {
+            base.vModelBindings = vModelBindings;
+          }
+        }
+
+        // Use full content for accessibility (includes <template>)
+        base.accessibility = this.extractAccessibility(rawContent);
+      }
 
       if (layer === "hook") {
         Object.assign(base, this.analyzeHookAST(sourceFile, content));
@@ -140,6 +162,17 @@ export class ComponentAnalyzer {
               stateVariables.push(first.name.text);
             }
           }
+        }
+
+        // Vue: const x = ref(...), reactive({...}), computed(...), shallowRef(...)
+        if (
+          ts.isCallExpression(node.initializer) &&
+          ts.isIdentifier(node.initializer.expression) &&
+          ["ref", "reactive", "computed", "shallowRef", "shallowReactive"].includes(node.initializer.expression.text) &&
+          ts.isIdentifier(node.name) &&
+          node.name.text !== "_"
+        ) {
+          stateVariables.push(node.name.text);
         }
       }
 
@@ -321,6 +354,13 @@ export class ComponentAnalyzer {
       }
     }
 
+    // Vue: onMounted/watchEffect with service/adapter calls
+    if (content.includes("onMounted") || content.includes("watchEffect")) {
+      if (/(?:Service|Adapter)\.\w+\s*\(/.test(content)) {
+        return "lifecycle-service-call";
+      }
+    }
+
     const dataHooks = hooks.filter(
       (h) =>
         h.startsWith("use") &&
@@ -332,7 +372,7 @@ export class ComponentAnalyzer {
     );
 
     if (dataHooks.length > 0) {
-      return `custom-hook: ${dataHooks[0]}`;
+      return `custom-composable: ${dataHooks[0]}`;
     }
 
     return undefined;
@@ -590,6 +630,92 @@ export class ComponentAnalyzer {
       hasSessionStorageUsage,
       violations,
     };
+  }
+
+  // ========== Vue Template Analysis (regex-based) ==========
+
+  private static VUE_BUILTINS = new Set([
+    "Teleport", "Transition", "TransitionGroup", "KeepAlive", "Suspense",
+    "Component", "Slot",
+  ]);
+
+  private analyzeVueTemplate(fullContent: string): {
+    childComponents: string[];
+    eventHandlers: string[];
+  } {
+    const templateMatch = fullContent.match(/<template\b[^>]*>([\s\S]*?)<\/template>/);
+    if (!templateMatch) return { childComponents: [], eventHandlers: [] };
+    const template = templateMatch[1];
+
+    // PascalCase component usages: <ComponentName or <ComponentName>
+    const childComponents = new Set<string>();
+    const componentRegex = /<([A-Z][A-Za-z0-9]+)[\s/>]/g;
+    let match;
+    while ((match = componentRegex.exec(template))) {
+      if (!ComponentAnalyzer.VUE_BUILTINS.has(match[1])) {
+        childComponents.add(match[1]);
+      }
+    }
+
+    // Event handlers: @eventName="..." or v-on:eventName="..."
+    const eventHandlers = new Set<string>();
+    const eventRegex = /(?:@|v-on:)([\w:.]+)/g;
+    while ((match = eventRegex.exec(template))) {
+      eventHandlers.add(match[1]);
+    }
+
+    return {
+      childComponents: Array.from(childComponents).sort(),
+      eventHandlers: Array.from(eventHandlers).sort(),
+    };
+  }
+
+  // ========== Vue Emit Extraction (AST-based) ==========
+
+  private extractVueEmits(sourceFile: ts.SourceFile): string[] {
+    const emits: string[] = [];
+
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "defineEmits") {
+        // Pattern 1: defineEmits<{ (e: "name", val: T): void }>()
+        if (node.typeArguments?.[0] && ts.isTypeLiteralNode(node.typeArguments[0])) {
+          for (const member of node.typeArguments[0].members) {
+            // Call signature: (e: "name", ...): void
+            if (ts.isCallSignatureDeclaration(member) && member.parameters.length > 0) {
+              const firstParam = member.parameters[0];
+              if (firstParam.type && ts.isLiteralTypeNode(firstParam.type) && ts.isStringLiteral(firstParam.type.literal)) {
+                emits.push(firstParam.type.literal.text);
+              }
+            }
+          }
+        }
+        // Pattern 2: defineEmits(["name1", "name2"])
+        if (node.arguments[0] && ts.isArrayLiteralExpression(node.arguments[0])) {
+          for (const el of node.arguments[0].elements) {
+            if (ts.isStringLiteral(el)) {
+              emits.push(el.text);
+            }
+          }
+        }
+      }
+
+      // Options API: emits: ["update:modelValue", "close"]
+      if (
+        ts.isPropertyAssignment(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === "emits" &&
+        ts.isArrayLiteralExpression(node.initializer)
+      ) {
+        for (const el of node.initializer.elements) {
+          if (ts.isStringLiteral(el)) emits.push(el.text);
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(sourceFile);
+    return [...new Set(emits)].sort();
   }
 
   // ========== Accessibility (keep regex — fine for HTML attribute scanning) ==========

@@ -7,7 +7,7 @@ export interface ComponentUsage {
   file: string;
   component: string;
   line: number;
-  usageType: "jsx" | "import";
+  usageType: "jsx" | "import" | "template";
 }
 
 /**
@@ -26,8 +26,10 @@ export async function findComponentUsages(
   const usages: ComponentUsage[] = [];
   const escapedName = escapeRegex(name);
   const jsxRegex = new RegExp(`<${escapedName}[\\s/>]`, "g");
+  // Match any import line containing the name as a word before "from"
+  // Handles: import Name from, import Name, { Other } from, import { Name } from
   const importRegex = new RegExp(
-    `import\\s+(?:.*\\{[^}]*\\b${escapedName}\\b[^}]*\\}|${escapedName})\\s+from`,
+    `import\\s+[^;]*\\b${escapedName}\\b[^;]*\\s+from`,
     "g"
   );
 
@@ -105,12 +107,15 @@ function scanFileForUsages(
   importRegex: RegExp,
   usages: ComponentUsage[]
 ): void {
+  const isVue = relativePath.endsWith(".vue");
+  const templateUsageType = isVue ? "template" : "jsx";
+
   if (!content) {
     usages.push({
       file: relativePath,
       component: componentName,
       line: 0,
-      usageType: "jsx",
+      usageType: templateUsageType,
     });
     return;
   }
@@ -119,7 +124,7 @@ function scanFileForUsages(
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
 
-    for (const [regex, type] of [[jsxRegex, "jsx"], [importRegex, "import"]] as const) {
+    for (const [regex, type] of [[jsxRegex, templateUsageType], [importRegex, "import"]] as [RegExp, "jsx" | "import" | "template"][]) {
       regex.lastIndex = 0;
       if (!regex.test(line)) continue;
       usages.push({

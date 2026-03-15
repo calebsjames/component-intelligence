@@ -7,7 +7,9 @@ export type ArchitectureLayer =
   | "hook"
   | "service"
   | "adapter"
-  | "context";
+  | "context"
+  | "dto"
+  | "type";
 
 /**
  * Configuration file schema (.component-intelligence.json)
@@ -77,6 +79,10 @@ export interface Component {
   imports?: ImportInfo[]; // Import statements
   dataFetchingPattern?: string; // "react-query" | "swr" | "useEffect-fetch" | etc.
 
+  // Vue-specific metadata
+  emits?: string[]; // Emitted event names (Vue defineEmits / Options API emits)
+  vModelBindings?: string[]; // v-model bindings (e.g., ["modelValue", "search", "filters"])
+
   // Hook-specific metadata
   parameters?: string[]; // Function parameters for hooks
   returnType?: string; // Return type for hooks
@@ -92,6 +98,9 @@ export interface Component {
   // Route metadata (for pages)
   routePath?: string; // URL route path
   isProtected?: boolean; // Requires authentication
+
+  // File alias (when defineComponent name differs from filename)
+  fileAlias?: string;
 }
 
 /**
@@ -175,6 +184,8 @@ export interface ComponentAnalysis {
   eventHandlers?: string[];
   imports?: ImportInfo[];
   dataFetchingPattern?: string;
+  emits?: string[];
+  vModelBindings?: string[];
   parameters?: string[];
   returnType?: string;
   queryKeys?: string[];

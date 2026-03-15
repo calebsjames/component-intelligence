@@ -118,11 +118,11 @@ export class ComponentScanner {
       const stats = await fs.stat(fullPath);
       const category = parentCategory || this.determineCategory(fullPath, target);
       const relativePath = path.relative(this.workspaceRoot, fullPath);
-      const fileBaseName = entry.name.replace(/\.(tsx?|jsx?)$/, "");
+      const fileBaseName = entry.name.replace(/\.(vue|tsx?|jsx?)$/, "");
       const componentName = this.extractExportedName(content, fileBaseName) || fileBaseName;
       const analysis = await this.analyzer.analyzeComponent(fullPath, componentName, target.type);
 
-      components.push({
+      const component: Component = {
         name: componentName,
         path: fullPath,
         relativePath,
@@ -130,7 +130,14 @@ export class ComponentScanner {
         architectureLayer: target.type,
         lastModified: stats.mtimeMs,
         ...analysis,
-      });
+      };
+
+      // Track filename alias when defineComponent name differs from filename
+      if (componentName !== fileBaseName && fileBaseName !== componentName) {
+        (component as any).fileAlias = fileBaseName;
+      }
+
+      components.push(component);
     }
 
     return components;
@@ -170,6 +177,13 @@ export class ComponentScanner {
       const match = content.match(pattern);
       if (match) return match[1];
     }
+
+    // Vue: defineComponent({ name: "ComponentName" })
+    const defineComponentName = content.match(
+      /defineComponent\(\s*\{[^}]*name:\s*["']([A-Za-z][A-Za-z0-9]*)["']/
+    );
+    if (defineComponentName) return defineComponentName[1];
+
     return null;
   }
 

@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import type { ComponentScanner } from "../scanner/componentScanner.js";
 import type { CacheManager } from "../cache/cacheManager.js";
+import type { RouteAnalyzer } from "../analyzer/routeAnalyzer.js";
 import type { DeadCodeEntry, Component } from "../types.js";
 import { ensureCatalog, escapeRegex } from "./shared.js";
 
@@ -18,19 +19,47 @@ export async function findDeadCode(
   scanner: ComponentScanner,
   cache: CacheManager,
   workspaceRoot: string,
-  options?: { layer?: string }
+  options?: { layer?: string },
+  routeAnalyzer?: RouteAnalyzer
 ): Promise<DeadCodeReport> {
   const catalog = await ensureCatalog(scanner, cache);
+
+  // Build set of routed component names to avoid false positives
+  const routedComponents = new Set<string>();
+  if (routeAnalyzer) {
+    const routes = await routeAnalyzer.analyzeRoutes();
+    for (const route of routes) {
+      if (route.component && route.component !== "Unknown") {
+        routedComponents.add(route.component.toLowerCase());
+      }
+    }
+  }
 
   let candidates = catalog.components;
   if (options?.layer) {
     candidates = candidates.filter((c) => c.architectureLayer === options.layer);
   }
 
+  // Pre-read all files once (O(n) reads instead of O(n^2))
+  const contentIndex = new Map<string, string>();
+  await Promise.all(
+    catalog.components.map(async (comp) => {
+      try {
+        contentIndex.set(comp.path, await fs.readFile(comp.path, "utf-8"));
+      } catch { /* skip */ }
+    })
+  );
+
   const unusedExports: DeadCodeEntry[] = [];
 
   for (const component of candidates) {
     if (component.architectureLayer === "page" && component.routePath) continue;
+    // Skip pages that are route components (even without routePath set on the catalog item)
+    if (
+      component.architectureLayer === "page" &&
+      (routedComponents.has(component.name.toLowerCase()) ||
+        (component.fileAlias && routedComponents.has(component.fileAlias.toLowerCase())))
+    ) continue;
 
     const nameLower = component.name.toLowerCase();
     const externalImporters = cache.getImportersOf(component.name).filter(
@@ -54,11 +83,9 @@ export async function findDeadCode(
 
     if (totalUsages > 0) continue;
 
-    const hasFileReference = await checkFileReferences(
-      component,
-      catalog.components,
-      workspaceRoot
-    );
+    // Also check file alias name references (defineComponent name vs filename)
+    const hasFileReference = checkFileReferencesFromIndex(component, contentIndex) ||
+      (component.fileAlias ? checkNameInIndex(component.fileAlias, component.path, contentIndex) : false);
 
     if (hasFileReference) continue;
 
@@ -78,22 +105,23 @@ export async function findDeadCode(
   };
 }
 
-async function checkFileReferences(
+function checkFileReferencesFromIndex(
   target: Component,
-  allComponents: Component[],
-  _workspaceRoot: string
-): Promise<boolean> {
-  const refRegex = new RegExp(`\\b${escapeRegex(target.name)}\\b`);
+  contentIndex: Map<string, string>
+): boolean {
+  return checkNameInIndex(target.name, target.path, contentIndex);
+}
 
-  for (const component of allComponents) {
-    if (component.name === target.name) continue;
+function checkNameInIndex(
+  name: string,
+  excludePath: string,
+  contentIndex: Map<string, string>
+): boolean {
+  const refRegex = new RegExp(`\\b${escapeRegex(name)}\\b`);
 
-    try {
-      const content = await fs.readFile(component.path, "utf-8");
-      if (refRegex.test(content)) return true;
-    } catch {
-      // Skip files that can't be read
-    }
+  for (const [path, content] of contentIndex) {
+    if (path === excludePath) continue;
+    if (refRegex.test(content)) return true;
   }
 
   return false;
